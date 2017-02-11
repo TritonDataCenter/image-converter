@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+#
+# Copyright (c) 2017 Joyent Inc., All rights reserved.
+#
+
+set -euo pipefail
+IFS=$'\n\t'
+
+BUILD_DATE=$(date +%Y%m%d%H)
+SRC_IMAGE=
+SRC_SIZE=
+SRC_TYPE=
+IMAGE_NAME=
+BLANK_MANIFEST=blank.json
+VM_UUID=
+
+usage() {
+cat <<EOF
+
+Create an Triton KVM image from a given qcow2, vmdk or raw image file.
+
+Usage:
+	$0 -i <SRC_IMAGE> -n <IMAGE_NAME> -o <OS>
+	
+Example:
+	$0 -i image.qcow2 -n Ubuntu -o linux
+
+Options:
+	-i The source image file (qcow2, vmdk or raw). Required.
+	-o The OS of the source image. Must be bsd, illumos, linux, other, smartos or windows. Required.
+	-n The name of the image as it would appear in the manifest. Required.
+
+EOF
+}
+
+while getopts "hi:n:o:" OPTION
+do
+	case $OPTION in
+		h)
+			usage
+			exit 1
+			;;
+		i)
+			SRC_IMAGE=${OPTARG}
+			;;
+		n)
+			IMAGE_NAME=${OPTARG}
+			;;
+		o)
+			OS=${OPTARG,,}
+			;;
+		?)
+			usage
+			exit 1
+			;;
+	esac
+done
+
+if [[ $# -eq 0 ]]; then
+	usage
+	exit 1
+fi
+
+if [[ -z "$SRC_IMAGE" ]]; then
+	echo "ERROR: A missing source image (-i) value"
+	usage
+	exit 1
+fi
+
+if [[ ! -e "$SRC_IMAGE" ]]; then
+	echo "ERROR: image file '$SRC_IMAGE' not found"
+	exit 1
+fi
+
+if [[ ! -r "$SRC_IMAGE" ]]; then
+	echo "ERROR: Cannot read file $SRC_IMAGE"
+	exit 1
+fi
+
+if [[ ! -f "$SRC_IMAGE" ]]; then
+	echo "ERROR: $SRC_IMAGE must be a regular file not a directory"
+	exit 1
+fi
+
+if [[ -z $IMAGE_NAME ]]; then
+	echo "ERROR: A missing target image name (-n)"
+	usage
+	exit 1
+fi
+
+if [[ -z $OS ]]; then
+	echo "ERROR: A missing target image OS (-o)"
+	usage
+	exit 1
+fi
+
+VALID_OSES=( bsd illumos linux other smartos windows )
+match="false"
+for os in "${VALID_OSES[@]}"; do
+	if [[ "$os" == "$OS" ]]; then
+		match="true"
+		break
+	fi
+done
+
+if [[ "$match" == "false" ]]; then
+	echo "Value of -o muse be one of bsd, illumos, linux, other, smartos or windows"
+fi
+
+# OS value must be bsd, illumos, linux, other, smartos or windows.
+
+get-source-size() {
+	SIZE_BYTES=$(qemu-img info --output=json "$SRC_IMAGE" | json -a virtual-size)
+
+	# Convert to MB
+	SRC_SIZE=$((SIZE_BYTES/1024/1024))
+	echo "==> Source size is $SRC_SIZE MB"
+}
+
+get-source-type(){
+	SRC_TYPE=$(qemu-img info --output=json "$SRC_IMAGE" | json -a format-specific.type)
+	echo "==> Source type is $SRC_TYPE"
+}
+
+set-quota() {
+	# Use srouce size plus 10GB
+	BLK_QUOTA=$((SRC_SIZE/1024+10))
+	echo "==> Quota for blank VM: $BLK_QUOTA GB"
+}
+
+create-blank-manifest() {
+	cat << MANIFEST > $BLANK_MANIFEST
+	{
+		"brand": "kvm",
+		"alias": "$IMAGE_NAME",
+		"hostname": "$IMAGE_NAME",
+		"autoboot": false,
+		"ram": 4096,
+		"max_physical_memory": 4096,
+		"quota": $BLK_QUOTA,
+		"disks": [
+			{
+				"boot": true,
+				"model": "virtio",
+				"size": $SRC_SIZE 
+			}
+		]
+	}
+MANIFEST
+	echo "==> Manifest created."
+}
+
+create-blank() {
+	echo "==> Creating blank VM..."
+	VM_UUID=$(pfexec vmadm create -f "$BLANK_MANIFEST" 2>&1 | awk '{print $4;}')
+	echo "==> UUID is $VM_UUID"
+}
+
+convert-image() {
+	echo "==> Converting $SRC_IMAGE image to $VM_UUID-disk0..."
+	pfexec qemu-img convert -f "$SRC_TYPE" -O host_device "$SRC_IMAGE" /dev/zvol/rdsk/zones/"$VM_UUID"-disk0
+	echo "==> done."
+}
+
+create-snapshot() {
+	echo "==> Creating snapshot..."
+	zfs snapshot zones/"$VM_UUID"-disk0@dataset-"$BUILD_DATE"
+	echo "==> done."
+}
+
+create-image-file() {
+	echo "==> Creating image file..."
+	zfs send zones/"$VM_UUID"-disk0@dataset-"$BUILD_DATE" | gzip -9 > "$IMAGE_NAME"-"$BUILD_DATE".zfs.gz
+	echo "==> done."
+}
+
+create-manifest() {
+	echo "==> Creating manifest file..."
+	./create-kvm-manifest -f "$IMAGE_NAME"-"$BUILD_DATE".zfs.gz -n "$IMAGE_NAME" -s "$SRC_SIZE" -v "$BUILD_DATE" -o "$OS" > "$IMAGE_NAME"-"$BUILD_DATE".json
+	echo "==> done."
+}
+
+show-image-files() {
+	echo "*** Image creation complete ***"
+	echo "==> Image files:"
+	echo "$IMAGE_NAME-$BUILD_DATE.json"
+	echo "$IMAGE_NAME-$BUILD_DATE.zfs.gz"
+	echo ""
+}
+
+clean-up() {
+	echo "==> Cleaning up."
+	rm -rf blank.json
+	echo "==> Deleting blank $IMAGE_NAME VM: $VM_UUID"
+	pfexec vmadm delete "$VM_UUID"
+	echo "==> Done."
+}
+
+get-source-size
+get-source-type
+set-quota
+create-blank-manifest
+create-blank
+convert-image
+create-snapshot
+create-image-file
+create-manifest
+show-image-files
+clean-up

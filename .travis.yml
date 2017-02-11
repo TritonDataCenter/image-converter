@@ -1,0 +1,11 @@
+language: bash
+addons:
+  apt:
+    sources:
+    - debian-sid    # Grab ShellCheck from the Debian repo
+    packages:
+    - shellcheck
+script:
+  - bash -n convert-image
+  - bash -n create-kvm-manifest
+  - shellcheck -s bash convert-image create-kvm-manifest

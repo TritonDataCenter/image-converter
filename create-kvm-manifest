@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# Copyright (c) 2017 Joyent Inc., All rights reserved.
+#
+
+set -euo pipefail
+IFS=$'\n\t'
+
+NOW=$(date -u +%Y-%m-%dT%TZ)
+VM_UUID=$(uuid)
+SUM=/usr/bin/sum
+description=
+disk_driver=
+filename=
+name=
+nic_driver=
+os=
+image_size=
+version=
+homepage=
+
+usage() {
+	cat <<USAGE
+Usage: $0 -f <filename> -n <name> -s <size>
+
+	-d <image description> (optional, default: "<NAME> <VERSION> KVM Triton")
+	-D <disk driver> (optional, default: "virtio")
+	-f <filename of VM image> (required)
+	-n <name of VM image> (required)
+	-N <NIC driver> (optional, default: "virtio")
+	-o <OS name> (optional, default: other)
+	-s <size of virtual disk (as seen by VM, MiB)> (required)
+	-v <version of VM image> (optional, default: YYYMMDDHHMM)
+	-h <homepage link> (optional, default: https://docs.joyent.com/images/)
+
+Example:
+
+	$0 -f ubuntu-14-20170207.zfs.gz -s 65566 -n Ubuntu -v 20170207 
+
+USAGE
+	exit 1
+}
+
+while getopts d:D:f:n:N:o:s:v:h:? OPTION; do
+	case $OPTION in
+	d)
+		description=${OPTARG}
+		;;
+	D)
+		disk_driver=${OPTARG}
+		;;
+	f)
+		filename=${OPTARG}
+		;;
+	n)
+		name=${OPTARG}
+		;;
+	N)
+		nic_driver=${OPTARG}
+		;;
+	o)
+		os=${OPTARG}
+		;;
+	s)
+		image_size=${OPTARG}
+		;;
+	v)
+		version=${OPTARG}
+		;;
+	h)
+		homepage=${OPTARG}
+		;;
+	\?)
+		usage
+		;;
+	esac
+done
+
+if [[ -z $filename || -z $name || -z $image_size ]]; then
+	echo "FATAL: All of -f, -n, -s and -v are required."
+	usage
+fi
+
+if [[ -z $description ]]; then
+	description="$name $version KVM Triton image"
+fi
+
+if [[ -z $os ]]; then
+	os=other
+fi
+
+if [[ ! -f $filename ]]; then
+	echo "FATAL: $filename does not exist."
+	usage
+fi
+
+if [[ -z $disk_driver ]]; then
+	disk_driver="virtio"
+fi
+
+if [[ -z $nic_driver ]]; then
+	nic_driver="virtio"
+fi
+
+if [[ -z $version ]]; then
+	version=$(date +%Y%m%d%H%M)
+fi
+
+if [[ -z $homepage ]]; then
+	homepage="https://docs.joyent.com/images/"
+fi
+
+shasum=$($SUM -x sha1 "$filename" | cut -d' ' -f1)
+filesize=$(wc -c < "$filename")
+
+cat <<EOF
+{
+	"v": "2",
+	"name": "$name",
+	"version": "$version",
+	"type": "zvol",
+	"cpu_type": "host",
+	"description": "$description",
+	"homepage": "$homepage",
+	"published_at": "$NOW",
+	"os": "$os",
+	"image_size": "$image_size",
+	"files": [
+		{
+			"sha1": "$shasum",
+			"size": $filesize,
+			"compression": "gzip"
+		}
+	],
+	"requirements": {
+		"networks": [
+			{
+				"name": "net0",
+				"description": "public"
+			}
+		]
+	},
+	"disk_driver": "virtio",
+	"nic_driver": "virtio",
+	"uuid": "${VM_UUID}",
+	"public": false,
+	"owner": "00000000-0000-0000-0000-000000000000",
+	}
+}
+EOF
