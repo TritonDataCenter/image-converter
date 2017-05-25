@@ -1,3 +1,5 @@
 # Image Converter
 
-Scripts used to create a Triton KVM image from a from a given qcow2, vmdk or raw image file.
+This is an experimental script that can be used to create a Triton KVM image from a from a given qcow2, vmdk or raw image file.
+
+See `create-image -h` for usage.
