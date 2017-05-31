@@ -144,7 +144,6 @@ cat <<EOF
 	"nic_driver": "virtio",
 	"uuid": "${VM_UUID}",
 	"public": false,
-	"owner": "00000000-0000-0000-0000-000000000000",
-	}
+	"owner": "00000000-0000-0000-0000-000000000000"
 }
 EOF
